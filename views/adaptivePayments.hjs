@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <title>{{ title }}</title>
+        <link rel='stylesheet' href='/stylesheets/style.css' />
+        <script src='https://ajax.googleapis.com/ajax/libs/jquery/2.2.0/jquery.min.js'></script>
+
+        <script type='text/javascript'>
+            $(document).ready(function() {
+                $('#userID').val('{{userId}}');
+                $('#amount').keyup(function() {
+                    var amount = $('#amount').val();
+                    if (amount && amount > 0)
+                        $('#startPreapproval').removeAttr('disabled');
+                    else $('#startPreapproval').prop('disabled', true);
+
+                });
+
+                $('#startPreapproval').click(function() {
+                    var userId = $('#userID').val();
+                    var body = {
+                        amount: $('#amount').val()
+                    };
+                    if ($("input[name='immediateCharge']").prop('checked')) body['immediateCharge'] = true;
+                    if ($("input[name='multiplePreapprovals']").prop('checked')) body['multiplePreapprovals'] = true;
+
+                    $.ajax({
+                        url: '/1/paypal/adaptivepayment/preapproval/' + userId,
+                        method: 'POST',
+                        contentType: 'application/json',
+                        data: JSON.stringify(body),
+                        success: function(data, status, obj) {
+                            if (data.redirect)
+                                window.location.href = data.redirect;
+                        },
+                        error: function(err) {
+                            alert(err.status + ' - ' + err.responseText);
+                        }
+                    });
+                });
+
+                $('.continuePreapproval').click(function() {
+                    var url = 'https://www.sandbox.paypal.com/webapps/adaptivepayment/flow/preapproval?expType=redirect&preapprovalKey=' + $('.continuePreapproval').attr('key');
+                    alert(url);
+                    window.location.href = url;
+                });
+                $('.payRequest').click(function(e) {
+                    var key = $(e.target).attr('key');
+                    var body = {
+                        amount: 0
+                    };
+
+                    $.ajax({
+                        url: '/1/paypal/adaptivepayment/pay/' + key,
+                        method: 'POST',
+                        contentType: 'application/json',
+                        data: JSON.stringify(body),
+                        success: function(data, status, obj) {
+                            alert(obj.status + ' - ' + JSON.stringify(data));
+                        },
+                        error: function(err) {
+                            alert(err.status + ' - ' + err.responseText);
+                        }
+                    });
+                });
+                $('.cancelPreapproval').click(function(e) {
+                    var key = $(e.target).attr('key');
+                    $.ajax({
+                        url: '/1/paypal/adaptivepayment/preapproval/' + key,
+                        method: 'DELETE',
+                        success: function(data, status, obj) {
+                            $(e.target).closest('div').remove();
+                        },
+                        error: function(err) {
+                            alert(err.status + ' - ' + err.responseText);
+                        }
+                    });
+                });
+            });
+        </script>
+
+    </head>
+    <body>
+        <h1>{{ title }}</h1>
+        <div>
+            <h2>Create new preapproval:</h2>
+            <form>
+                User ID:
+                <input id='userID' type='text' name='userID' placeholder='123456'><br>
+                Preapproval amount:
+                <input id='amount' type='text' name='amount' placeholder='30.00'><br>
+                Select options:<br>
+                <input type='checkbox' name='immediateCharge'> Charge right away<br>
+                <input type='checkbox' name='multiplePreapprovals'> Allow multiple preapprovals<br>
+                <button id='startPreapproval' type='button' disabled>Submit</button>
+            </form>
+        </div>
+        <br>
+        <div>
+            Current preapprovals:
+            {{#preapprovals}}
+                <div>
+                    {{starting_date}} - {{ending_date}} | {{status}} | ${{max_amount_per_payment}} |
+                    {{#links}}
+                        <button class='{{id}}' type='button' key='{{key}}'>{{label}}</button>
+                    {{/links}}
+                </div>
+            {{/preapprovals}}
+        </div>
+    </body>
+</html>
