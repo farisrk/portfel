@@ -18,11 +18,22 @@
 
                 $('#startPreapproval').click(function() {
                     var userId = $('#userID').val();
+                    var startDate = new Date();
+                    var endDate = new Date();
+                    endDate.setYear(startDate.getFullYear() + 1);
+
                     var body = {
-                        amount: $('#amount').val()
+                        max_amount_per_payment: $('#amount').val(),
+                        return_url: 'http://fk-server.airg.us:3000/1/paypal/adaptivepayment/preapproval/' + userId,
+                        cancel_url: 'http://fk-server.airg.us:3000/1/paypal/adaptivepayment/preapproval/' + userId,
+                        starting_date: startDate.toISOString(),
+                        ending_date: endDate.toISOString(),
+                        //memo: '',
+                        secondary_id: '1234567890',
+                        purchase_key: 'PPAP_25_00_USD'
                     };
-                    if ($("input[name='immediateCharge']").prop('checked')) body['immediateCharge'] = true;
-                    if ($("input[name='multiplePreapprovals']").prop('checked')) body['multiplePreapprovals'] = true;
+                    if ($("input[name='immediateCharge']").prop('checked')) body['immediate_charge'] = true;
+                    if ($("input[name='multiplePreapprovals']").prop('checked')) body['multiple_preapprovals'] = true;
 
                     $.ajax({
                         url: '/1/paypal/adaptivepayment/preapproval/' + userId,

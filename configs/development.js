@@ -21,11 +21,22 @@ module.exports = {
         ipn: {
             verify: 'www.sandbox.paypal.com',
             preapproval: 'http://fk-server.airg.us/1/paypal/adaptivepayment/ipn',
-            pay: 'http://fk-server.airg.us/1/paypal/adaptivepayment/ipn'
+            //pay: 'http://fk-server.airg.us/1/paypal/adaptivepayment/ipn'
+            pay: 'http://api.im.airg.us/1/paypal/'
         },
         immediateCharge: false,
         multiplePreapprovals: true,
         currencyCode: 'USD'
+    },
+    transactions: {
+        host: 'http://api.im.airg.us:8450',
+        create: {
+            uri: '/1/paypal/:userId'
+        },
+        update: {
+            uri: '/1/transactions/:userId/:guid'
+        }
+
     }
 
     // accessControl: {

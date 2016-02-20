@@ -10,7 +10,7 @@ var staticFuncs = exports.PreApprovalDAO = {
 
     // Methods:
     getByUser: function(userId, callback) {
-        var query = { userId: userId, status: staticFuncs.STATUS_ACTIVE };
+        var query = { user_Id: userId, status: staticFuncs.STATUS_ACTIVE };
         MongoDB.get().collection('PreApprovals').find(query).toArray((err, result) => {
             if (err) {
                 // TODO: Log.error('[PreApprovalDAO::getByUser] query: [' + query + '], error: [' + err + ']');
@@ -31,18 +31,12 @@ var staticFuncs = exports.PreApprovalDAO = {
         });
     },
 
-    create: function(key, userId, airgId, startDate, endDate, amount) {
-        var data = {
-            _id: key,
-            userId: userId,
-            airgId: airgId,
-            max_amount_per_payment: amount,
-            starting_date: startDate,
-            ending_date: endDate,
-            status: staticFuncs.STATUS_PENDING,
-            createt_at: (new Date()).getTime(),
-            updated_at: (new Date()).getTime()
-        };
+    create: function(key, data) {
+        data['_id'] = key;
+        data['status'] = staticFuncs.STATUS_PENDING;
+        data['created_at'] = (new Date()).getTime();
+        data['updated_at'] = (new Date()).getTime();
+
         MongoDB.get().collection('PreApprovals').insert(data, { safe: true }, (err, result) => {
             if (err) {
                 // TODO: Log.error('[PreApprovalDAO::getByUser] query: [' + query + '], error: [' + err + ']');

@@ -6,6 +6,7 @@ var Paypal = require('paypal-adaptive');
 var PreApprovalModel = require('../models/PreApproval').PreApprovalDAO;
 var _ = require('underscore');
 var qs = require('querystring');
+var request = require('request');
 
 var paypalSdk = new Paypal({
     userId: global.options.paypal.api.userId,
@@ -18,8 +19,10 @@ var paypalSdk = new Paypal({
 });
 
 /* GET users listing. */
-router.get('/preapproval/:userId', (req, res) => {
-    PreApprovalModel.getByUser(req.params.userId, (result) => {
+router.get('/preapproval/user/:userId', (req, res) => {
+    var userId = req.params.userId;
+
+    PreApprovalModel.getByUser(userId, (result) => {
         result.forEach((data) => {
             data['links'] = [];
             if (data.status == PreApprovalModel.STATUS_PENDING) {
@@ -46,7 +49,7 @@ router.get('/preapproval/:userId', (req, res) => {
 
         res.render('adaptivePayments', {
             title: "Adaptive Payments",
-            userId: req.params.userId,
+            userId: userId,
             preapprovals: result
         });
     });
@@ -56,8 +59,17 @@ router.get('/preapproval/:userId', (req, res) => {
 router.post('/preapproval/:userId', (req, res) => {
     var userId = req.params.userId;
     var options;
-    // TODO: application needs to provide return & cancel urls, start & end dates, optional memo
-
+    // TODO: application needs to provide return & cancel urls, start & end dates, optional memo, purchase key
+    // {
+    //     'return_url': '',
+    //     'cancel_url': '',
+    //     'starting_date': '',
+    //     'ending_date': '',
+    //     'memo': '',
+    //     'secondary_Id': '',
+    //     'purchase_key': '',
+    //     'max_amount_per_payment': '',
+    // }
     async.series([
         (next) => {
             if (global.options.paypal.multiplePreapprovals) return next();
@@ -71,20 +83,23 @@ router.post('/preapproval/:userId', (req, res) => {
         (next) => {
             options = {
                 currencyCode: global.options.paypal.currencyCode,
-                startingDate: new Date().toISOString(),
-                endingDate: new Date('2016-06-01').toISOString(),
-                returnUrl: 'http://fk-server.airg.us:3000/1/paypal/adaptivepayment/preapproval/' + userId,
-                cancelUrl: 'http://fk-server.airg.us:3000/1/paypal/adaptivepayment/preapproval/' + userId,
+                startingDate: req.body.starting_date,
+                endingDate: req.body.ending_date,
+                returnUrl: req.body.return_url,
+                cancelUrl: req.body.cancel_url,
                 ipnNotificationUrl: global.options.paypal.ipn.preapproval,
                 displayMaxTotalAmount: true,
-                maxAmountPerPayment: req.body.amount,
+                maxAmountPerPayment: req.body.max_amount_per_payment,
                 requestEnvelope: {
                     errorLanguage: 'en_US'
                 },
-                memo: req.body.memo || "Preapproval authorization for auto billing",  // include userId??
+                // memo:string - (Optional) A note about the preapproval. Maximum length: 1000 characters,
+                // including newline characters
+                memo: req.body.memo || "Preapproval authorization for auto billing",
                 requireInstantFundingSource: true
-                //maxNumberOfPayments: 1,
-                //maxTotalAmountOfAllPayments: '500.00',
+
+                //maxNumberOfPayments: 1
+                //maxTotalAmountOfAllPayments: '500.00'
             };
             console.log('PreApproval options:', options);
             paypalSdk.preapproval(qs.stringify(options), (err, response) => {
@@ -99,14 +114,13 @@ router.post('/preapproval/:userId', (req, res) => {
             res.status(500).send(err.message);
         } else {
             // create the preapproval entry
-            PreApprovalModel.create(
-                responseBody.preapprovalKey,
-                userId,
-                req.body.airgId,
-                options.startingDate,
-                options.endingDate,
-                options.maxAmountPerPayment
-            );
+            var data = _.extend(req.body, {
+                user_Id: userId,
+                starting_date: options.startingDate,
+                ending_date: options.endingDate,
+                max_amount_per_payment: options.maxAmountPerPayment
+            });
+            PreApprovalModel.create(responseBody.preapprovalKey, data);
             // send the redirect url
             res.status(200).send({
                 redirect: responseBody.preapprovalUrl
@@ -116,16 +130,40 @@ router.post('/preapproval/:userId', (req, res) => {
 });
 
 // get preapproval details
-// TODO: router.get('/1/paypal/preapproval/:userId', (req, res, next) => {});
-router.get('/preapp/:userId/', (req, res, next) => {
-    //
-})
+router.get('/preapproval/:key', (req, res) => {
+    var key = req.params.key;
+    var preapprovalDetails, options;
+
+    async.series([
+        (next) => {
+            // retrieve the preapproval details
+            PreApprovalModel.getByKey(key, (details) => {
+                preapprovalDetails = details;
+
+                if (!details)
+                    return next(new Error('PreApproval does not exist'));
+                return next();
+            });
+        },
+        (next) => {
+            // grab preapproval details from paypal
+            _getPreapprovalDetails(key, next);
+        }
+    ], (err, data) => {
+        if (err) {
+            console.error('Uh oh, something went wrong!', err.stack);
+            res.status(500).send(err.message);
+        } else {
+            res.status(200).json(data[1]);
+        }
+    });
+});
 
 // pay request
 router.post('/pay/:key', (req, res) => {
     var key = req.params.key;
     var amount = req.body.amount;
-    var preapprovalDetails, options;
+    var preapprovalDetails, options, transactionId;
 
     async.series([
         (next) => {
@@ -143,15 +181,35 @@ router.post('/pay/:key', (req, res) => {
             });
         },
         (next) => {
+            // create transaction on the transaction server
+            var url = global.options.transactions.host + global.options.transactions.create.uri;
+            url = url.replace(':userId', preapprovalDetails['secondary_id']);
+            var data = {
+                url: url,
+                body: {
+                    purchaseKey: preapprovalDetails['purchase_key']
+                },
+                json: true
+            };
+            request.post(data, (err, response, body) => {
+                console.log("transaction create:", err, data, body);
+                if (err) return next(new Error(err));
+                if (body.msg) return next(new Error(body['msg']));
+                transactionId = body['guid'];
+
+                return next();
+            });
+        },
+        (next) => {
             var userId = preapprovalDetails['userId'];
             options = {
-                'returnUrl': 'http://fk-server.airg.us:3000/1/paypal/adaptivepayment/preapproval/' + userId,
-                'cancelUrl': 'http://fk-server.airg.us:3000/1/paypal/adaptivepayment/preapproval/' + userId,
+                'returnUrl': req.body.return_url || preapprovalDetails['return_url'],
+                'cancelUrl': req.body.cancel_url || preapprovalDetails['cancel_url'],
                 'actionType': 'PAY',
                 'ipnNotificationUrl': global.options.paypal.ipn.pay,
 
                 'currencyCode': global.options.paypal.currencyCode,
-                //'trackingID': '', // unique payment ID to reference the payment
+                'trackingId': transactionId,
                 'preapprovalKey': key,
                 'memo': 'Preapproved Charge',
                 'receiverList.receiver(0).amount': amount,
@@ -160,9 +218,10 @@ router.post('/pay/:key', (req, res) => {
                 'reverseAllParallelPaymentsOnError': true,
                 'senderEmail': preapprovalDetails['sender_email'],
                 'requestEnvelope.errorLanguage': 'en_US',
+
                 //"detailLevel":"ReturnAll"
             };
-            console.log('PreApproval options:', options);
+            console.log('Pay options:', options);
             paypalSdk.pay(qs.stringify(options), (err, response) => {
                 if (err) err.message = response['error'][0]['message'];
                 return next(err, response);
@@ -197,10 +256,24 @@ router.post('/pay/:key', (req, res) => {
             });
         },
     ], (err, data) => {
-        var responseBody = data[1];
+        var responseBody = data[2];
+        var url = global.options.transactions.host + global.options.transactions.update.uri;
+        url = url.replace(':userId', preapprovalDetails['secondary_id']);
+        url = url.replace(':guid', transactionId);
+        var data = {
+            url: url,
+            body: {
+                action: 3024 // completed action
+            },
+            json: true
+        };
+
         if (err) {
             console.error('Uh oh, something went wrong!', err.stack, JSON.stringify(responseBody));
             res.status(500).send(err.message);
+            // add meta-data for the transaction status
+            data['body']['response'] = 505;
+            data['body']['render'] = err.message;
         } else {
             // create the preapproval entry
             var paymentData = {
@@ -217,7 +290,20 @@ router.post('/pay/:key', (req, res) => {
             };
             PreApprovalModel.createPayment(responseBody['payKey'], paymentData);
             res.status(200).send(paymentData);
+            // update the number of payments in the database
+            // PreApprovalModel.update(options['preapprovalKey'], { '$inc': {
+            //     'cur_payments': 1,
+            //     'cur_payments_amount': responseBody['paymentInfoList']['paymentInfo'][0]['receiver']['amount']
+            // }});
+            // add meta-data for the transaction status
+            data['body']['response'] = 200;
+            data['body']['purchaseId'] = responseBody['payKey'];
         }
+
+        // update the transaction
+        request.post(data, (err, response, body) => {
+            console.log("transaction update:", err, data, body);
+        });
     });
 });
 
@@ -276,7 +362,8 @@ router.post('/ipn', (req, res, next) => {
             // update the preapproval entry, this handles both ACTIVE and CANCELED states
             PreApprovalModel.update(
                 params['preapproval_key'],
-                _(params).pick(
+                _.pick(
+                    params,
                     'status','max_number_of_payments','max_amount_per_payment',
                     'sender_email','ending_date','starting_date'
                 )
@@ -335,3 +422,24 @@ router.post('/ipn', (req, res, next) => {
 });
 
 module.exports = router;
+
+function _getPreapprovalDetails(key, callback) {
+    // grab preapproval details from paypal
+    var options = {
+        preapprovalKey: key,
+        requestEnvelope: {
+            errorLanguage: 'en_US'
+        },
+    };
+    console.log('PreApprovalDetails options:', options);
+    paypalSdk.preapprovalDetails(qs.stringify(options), (err, response) => {
+        if (err) err.message = response['error'][0]['message'];
+        else {
+            PreApprovalModel.update(key, _.pick(
+                response,
+                'curPayments','curPaymentsAmount','status'
+            ));
+        }
+        return callback(err, response);
+    });
+}

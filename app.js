@@ -9,7 +9,7 @@ var qs = require('querystring');
 // get the working environment
 var env = process.env.NODE_ENV;
 if (['development', 'production'].indexOf(env) === -1) {
-    Log.error("Please specify node enviroment: NODE_ENV");
+    console.error("Please specify node enviroment: NODE_ENV");
     process.exit(1);
 }
 global.options = require('./configs/' + env);
