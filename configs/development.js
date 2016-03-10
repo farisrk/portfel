@@ -1,17 +1,16 @@
-// var path = require('path'),
-//     basePath = path.resolve(__dirname, '..');
+"use strict";
 
 module.exports = {
-    host: 'fk-server.airg.us',
+    host: 'xxx',
     port: 3000,
     paypal: {
         sandbox: true,
         api: {
             appId: 'APP-80W284485P519543T',
-            userId: 'farisk-facilitator_api1.airg.com',
-            email: 'farisk-facilitator@airg.com',
-            password: '1366916198',
-            signature: 'AYx57PI7lkdv0jITVY0Oi9NoZTw7Avfc.HjuYn2QAfW4xDlCpBNUdBua'
+            userId: 'xxx',
+            email: 'xxx',
+            password: 'xxx',
+            signature: 'xxx'
         },
         preapproval: {
             endpoint: 'https://svcs.sandbox.paypal.com/AdaptivePayments/Preapproval',
@@ -20,31 +19,51 @@ module.exports = {
         },
         ipn: {
             verify: 'www.sandbox.paypal.com',
-            preapproval: 'http://fk-server.airg.us/1/paypal/adaptivepayment/ipn',
-            //pay: 'http://fk-server.airg.us/1/paypal/adaptivepayment/ipn'
-            pay: 'http://api.im.airg.us/1/paypal/'
+            preapproval: 'http://xxx',
+            pay: 'http://xxx'
         },
         immediateCharge: false,
-        multiplePreapprovals: true,
+        multiplePreapprovals: false,
         currencyCode: 'USD'
     },
-    transactions: {
-        host: 'http://api.im.airg.us:8450',
-        create: {
+    wallet: {
+        host: 'http://xxx:3000',
+        createTransaction: {
+            method: 'POST',
             uri: '/1/paypal/:userId'
         },
-        update: {
+        updateTransaction: {
+            method: 'POST',
             uri: '/1/transactions/:userId/:guid'
+        },
+        updateBalance: {
+            method: 'POST',
+            uri: '/1/wallets/:userId'
+        },
+        getPricelist: {
+            method: 'GET',
+            uri: '/1/pricepoints/paypal/us/:purchaseKey'
         }
-
-    }
-
-    // accessControl: {
-    //     allowOrigin: '*',
-    //     allowMethods: 'OPTIONS, HEAD, GET, POST, PUT, DELETE',
-    //     allowHeaders: 'Content-Type, Content-Range, Content-Disposition'
-    // },
-    // nodeStatic: {
-    //     cache: 3600
-    // }
+    },
+    beanstalk: [
+        {
+            tube: "wallet",
+            name: "wallet",
+            host: "xxx",
+            port: "11300"
+        }
+    ],
+    mongo: [
+        {
+            host: "xxx",
+            port: "27017",
+            database: "Wallet",
+            connectionName: "wallet",
+            collections: [
+                "PreApprovals",
+                "Payments",
+                "PointsErrors"
+            ]
+        }
+    ]
 };

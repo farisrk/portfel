@@ -1,7 +1,10 @@
+"use strict";
+
 var https = require('https');
 var qs = require('querystring');
 var express = require('express');
 var router = express.Router();
+var PayPalModel = require('../models/PayPal').PayPalDAO;
 
 router.post(/ipn/, (req, res, next) => {
     // make sure request contains data in the body
@@ -34,8 +37,9 @@ router.post(/ipn/, (req, res, next) => {
         response.on('end', () => {
             var result = data.join('');
 
+            PayPalModel.logIPN(params);
             if (result === 'VERIFIED') return next(null, result);
-            else return next(new Error('IPN verification status: ' + response));
+            else return next(new Error('IPN verification status: ' + result));
         });
     });
     request.write(body);

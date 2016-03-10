@@ -8,12 +8,11 @@
         <script type='text/javascript'>
             $(document).ready(function() {
                 $('#userID').val('{{userId}}');
-                $('#amount').keyup(function() {
-                    var amount = $('#amount').val();
-                    if (amount && amount > 0)
+                $('#purchaseKey').keyup(function() {
+                    var amount = $('#purchaseKey').val();
+                    if (amount)
                         $('#startPreapproval').removeAttr('disabled');
                     else $('#startPreapproval').prop('disabled', true);
-
                 });
 
                 $('#startPreapproval').click(function() {
@@ -23,17 +22,16 @@
                     endDate.setYear(startDate.getFullYear() + 1);
 
                     var body = {
-                        max_amount_per_payment: $('#amount').val(),
-                        return_url: 'http://fk-server.airg.us:3000/1/paypal/adaptivepayment/preapproval/' + userId,
-                        cancel_url: 'http://fk-server.airg.us:3000/1/paypal/adaptivepayment/preapproval/' + userId,
+                        return_url: window.location.href,
+                        cancel_url: window.location.href,
                         starting_date: startDate.toISOString(),
                         ending_date: endDate.toISOString(),
                         //memo: '',
-                        secondary_id: '1234567890',
-                        purchase_key: 'PPAP_25_00_USD'
+                        secondary_id: '33966',
+                        purchase_key: $('#purchaseKey').val()
                     };
-                    if ($("input[name='immediateCharge']").prop('checked')) body['immediate_charge'] = true;
-                    if ($("input[name='multiplePreapprovals']").prop('checked')) body['multiple_preapprovals'] = true;
+                    // if ($("input[name='immediateCharge']").prop('checked')) body['immediate_charge'] = true;
+                    // if ($("input[name='multiplePreapprovals']").prop('checked')) body['multiple_preapprovals'] = true;
 
                     $.ajax({
                         url: '/1/paypal/adaptivepayment/preapproval/' + userId,
@@ -45,15 +43,9 @@
                                 window.location.href = data.redirect;
                         },
                         error: function(err) {
-                            alert(err.status + ' - ' + err.responseText);
+                            alert(err.status + ' - ' + JSON.parse(err.responseText)['msg']);
                         }
                     });
-                });
-
-                $('.continuePreapproval').click(function() {
-                    var url = 'https://www.sandbox.paypal.com/webapps/adaptivepayment/flow/preapproval?expType=redirect&preapprovalKey=' + $('.continuePreapproval').attr('key');
-                    alert(url);
-                    window.location.href = url;
                 });
                 $('.payRequest').click(function(e) {
                     var key = $(e.target).attr('key');
@@ -98,11 +90,11 @@
             <form>
                 User ID:
                 <input id='userID' type='text' name='userID' placeholder='123456'><br>
-                Preapproval amount:
-                <input id='amount' type='text' name='amount' placeholder='30.00'><br>
+                Purchase Key:
+                <input id='purchaseKey' type='text' name='amount' placeholder='XX_50_00_USD'><br>
                 Select options:<br>
-                <input type='checkbox' name='immediateCharge'> Charge right away<br>
-                <input type='checkbox' name='multiplePreapprovals'> Allow multiple preapprovals<br>
+<!--                 <input type='checkbox' name='immediateCharge'> Charge right away<br>
+                <input type='checkbox' name='multiplePreapprovals'> Allow multiple preapprovals<br> -->
                 <button id='startPreapproval' type='button' disabled>Submit</button>
             </form>
         </div>
