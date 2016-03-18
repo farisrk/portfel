@@ -8,9 +8,9 @@ var Paypal = require('paypal-adaptive');
 var PayPalModel = require('../models/PayPal').PayPalDAO;
 var _ = require('underscore');
 var qs = require('querystring');
-var request = require('request');
-var baseRequest = request.defaults({ baseUrl: global.options['wallet']['host'] });
 var beanstalkClient = require('../libs/database/Beanstalk').Beanstalk;
+var Log = global.logger.application;
+var WalletServer = require('../libs/Wallet').Wallet;
 
 var paypalSdk = new Paypal({
     userId: global.options.paypal.api.userId,
@@ -50,7 +50,7 @@ router.get('/preapproval/user/:userId', (req, res, done) => {
                     });
                 }
             });
-            console.log('get user preapprovals:', result);
+            Log.debug('get user preapprovals:', result);
 
             res.render('adaptivePayments', {
                 title: "Adaptive Payments",
@@ -67,7 +67,7 @@ router.get('/preapproval/user/:userId', (req, res, done) => {
 router.post('/preapproval/:userId', (req, res) => {
     var userId = req.params.userId;
     var purchaseKey = req.body['purchase_key'];
-    var options, amount, points, preapprovalResponse;
+    var options, amount, points, preapprovalResponse = {};
     // TODO: application needs to provide return & cancel urls, start & end dates, optional memo, purchase key
     // {
     //     'return_url': '',
@@ -107,21 +107,12 @@ router.post('/preapproval/:userId', (req, res) => {
             if (!purchaseKey.match(/^PPAP_/))
                 return next(new Error('Purchase key "' + purchaseKey + '" is invalid'));
 
-            var callData = global.options['wallet']['getPricelist'];
-            var data = {
-                method: callData['method'],
-                uri: callData['uri']
-                        .replace(':purchaseKey', purchaseKey),
-            };
-            baseRequest(data, (err, response, body) => {
-                if (err || response.statusCode != 200)
-                    return next(new Error("Purchase key '" + purchaseKey + "' is invalid"));
-
-                var purchaseKeyDetails = JSON.parse(body);
-                points = purchaseKeyDetails['points'];
-                amount = purchaseKeyDetails['exactPrice'];
-
-                return next();
+            _getPriceData(purchaseKey, (err, priceData) => {
+                if (!err) {
+                    points = priceData['points'];
+                    amount = priceData['exactPrice'];
+                }
+                return next(err);
             });
         },
         (next) => {
@@ -146,7 +137,7 @@ router.post('/preapproval/:userId', (req, res) => {
                 //maxNumberOfPayments: 1
                 //maxTotalAmountOfAllPayments: '500.00'
             };
-            console.log('PreApproval options:', options);
+            Log.debug('PreApproval options:', options);
             paypalSdk.preapproval(qs.stringify(options), (err, response) => {
                 preapprovalResponse = response;
 
@@ -159,7 +150,7 @@ router.post('/preapproval/:userId', (req, res) => {
         }
     ], (err) => {
         if (err) {
-            console.error('Uh oh, something went wrong!', err.stack, JSON.stringify(preapprovalResponse));
+            Log.error(err.message, preapprovalResponse);
             res.status(500).json({
                 msg: err.message,
                 details: preapprovalResponse
@@ -212,7 +203,7 @@ router.get('/preapproval/:key', (req, res) => {
         }
     ], (err, data) => {
         if (err) {
-            console.error('Uh oh, something went wrong!', err.stack);
+            Log.error(err.message);
             res.status(500).json({
                 msg: err.message
             });
@@ -226,7 +217,7 @@ router.get('/preapproval/:key', (req, res) => {
 router.post('/pay/:key', (req, res) => {
     var key = req.params['key'];
     var amount = req.body['amount'];
-    var preapprovalDetails, options, transactionId, payResponse, points;
+    var preapprovalDetails, options, transactionId, payResponse, points, secondaryId, purchaseKey;
 
     async.series([
         (next) => {
@@ -241,28 +232,21 @@ router.post('/pay/:key', (req, res) => {
                 if (!amount || parseFloat(amount) > parseFloat(details['max_amount_per_payment']))
                     amount = details['max_amount_per_payment'];
                 points = details['points'];
+                secondaryId = details['secondary_id'];
+                purchaseKey = details['purchase_key'];
 
                 return next();
             });
         },
         (next) => {
             // create transaction on the wallet server
-            var callData = global.options['wallet']['createTransaction'];
-            var data = {
-                method: callData['method'],
-                uri: callData['uri'].replace(':userId', preapprovalDetails['secondary_id']),
-                body: { purchaseKey: preapprovalDetails['purchase_key'] },
-                json: true
-            };
-            baseRequest(data, (err, response, body) => {
-                if (err || response.statusCode != 202) {
-                    return next(new Error(err || body['msg'] || body['message']));
+            WalletServer.createTransaction(secondaryId, purchaseKey, (err, res) => {
+                if (!err) {
+                    transactionId = res['guid'];
+                    if (!transactionId) err = new Error('Create transaction did not return a GUID');
                 }
 
-                transactionId = body['guid'];
-                if (!transactionId) return next(new Error('Create transaction did not return a GUID'));
-
-                return next();
+                return next(err);
             });
         },
         (next) => {
@@ -286,7 +270,7 @@ router.post('/pay/:key', (req, res) => {
                 'returnUrl': req.body['return_url'] || preapprovalDetails['return_url'],
                 'cancelUrl': req.body['cancel_url'] || preapprovalDetails['cancel_url']
             };
-            console.log('Pay options:', options);
+            Log.debug('Pay options:', options);
             paypalSdk.pay(qs.stringify(options), (err, response) => {
                 payResponse = response || {};
                 if (err) {
@@ -331,29 +315,18 @@ router.post('/pay/:key', (req, res) => {
         },
         (next) => {
             // add points to the user wallet
-            var callData = global.options['wallet']['updateBalance'];
-            var data = {
-                method: callData['method'],
-                uri: callData['uri']
-                        .replace(':userId', preapprovalDetails['secondary_id']),
-                body: {
-                    app: 'PAYPAL',
-                    points: points,
-                    memo: transactionId
-                },
-                json: true
-            };
-            baseRequest(data, (err, response, body) => {
-                if (err || response.statusCode != 200) {
+            WalletServer.updateBalance(secondaryId, transactionId, points, (err, res) => {
+                if (err) {
                     // could not add points to the user wallet, just log the error
+                    // TODO: send email alerts! .. use winston!
                     pointsProvisioningError(payResponse['payKey'], {
                         'points': points,
                         'transaction_id': transactionId,
-                        'purchase_key': preapprovalDetails['purchase_key'],
+                        'purchase_key': purchaseKey,
                         'user_id': preapprovalDetails['user_id'],
-                        'secondary_id': preapprovalDetails['secondary_id'],
-                        'errorCode': response.statusCode,
-                        'errorMessage': body['msg'] || response.statusMessage
+                        'secondary_id': secondaryId,
+                        'errorCode': err.statusCode,
+                        'errorMessage': err.message
                     });
                 }
 
@@ -361,28 +334,20 @@ router.post('/pay/:key', (req, res) => {
             });
         }
     ], (err) => {
-        var callData = global.options['wallet']['updateTransaction'];
-        var data = {
-            method: callData['method'],
-            uri: callData['uri']
-                .replace(':userId', preapprovalDetails['secondary_id'])
-                .replace(':guid', transactionId),
-            body: {
-                action: 3024,   // completed action
-                response: 200   // success response
-            },
-            json: true
+        var transactionStatus = {
+            action: 3024,   // completed action
+            response: 200   // success response
         };
 
         if (err) {
-            console.error('Uh oh, something went wrong!', err.stack, JSON.stringify(payResponse));
+            Log.error(err.message, payResponse);
             res.status(500).json({
                 msg: err.message,
                 details: payResponse
             });
             // add meta-data for the transaction status
-            data['body']['response'] = 505; // failed response
-            data['body']['render'] = err.message;
+            transactionStatus['response'] = 505; // failed response
+            transactionStatus['render'] = err.message;
         } else {
             // create the preapproval entry
             var paymentData = {
@@ -405,21 +370,21 @@ router.post('/pay/:key', (req, res) => {
 
             // add payment to beanstalk to reward user
             if (preapprovalDetails['cur_payments'] > 0) {
-                console.log("putting job in the beanstalk!");
+                Log.debug("putting job in the beanstalk!");
                 beanstalkClient.put('wallet', 1000, 0, 250, {
                     'vendor': 'PAYPAL',
                     'guid': transactionId,
-                    'userId': preapprovalDetails['secondary_id'],
+                    'userId': secondaryId,
                     'price': {
                         'paypal': 1,
                         'points': preapprovalDetails['points'],
-                        'purchaseKey': preapprovalDetails['purchase_key']
+                        'purchaseKey': purchaseKey
                     },
                     'created': payResponse['responseEnvelope']['timestamp']
-                }, function(err) { console.log('beanstalk put error: ', err.message) });
+                }, () => {});
             }
             // add meta-data for the transaction status
-            data['body']['purchaseId'] = payResponse['payKey'];
+            transactionStatus['purchaseId'] = payResponse['payKey'];
             // TODO: send e-mail to user notifying them of the charge
 
         }
@@ -427,11 +392,9 @@ router.post('/pay/:key', (req, res) => {
         // update transaction only if a transaction was created (unless error occurred)
         if (transactionId) {
             // update the transaction
-            baseRequest(data, (error, response, body) => {
-                console.log("transaction update:", err, data, body);
-            });
+            WalletServer.updateTransaction(secondaryId, transactionId, transactionStatus, () => {});
             // get preapproval details and sync with preapproval data in mongo
-            _getPreapprovalDetails(key, function() {});
+            _getPreapprovalDetails(key, () => {});
         }
     });
 });
@@ -449,16 +412,16 @@ router.delete('/preapproval/:key', (req, res, next) => {
     paypalSdk.cancelPreapproval(qs.stringify(options), (err, response) => {
         if (err) {
             err.message = response['error'][0]['message'];
-            console.error('Uh oh, something went wrong!', err.stack, JSON.stringify(response));
+            Log.error(err.message, response);
             res.status(500).json({
                 msg: err.message,
                 details: response['error'][0]
             });
         } else {
-            console.log('SUCCESS:', response);
+            Log.debug('SUCCESS:', { response: response });
             // update the preapproval in our database incase the IPN doesnot come or is late
             PayPalModel.update(
-                key, { status: PayPalModel.CANCELED }
+                key, { status: PayPalModel.STATUS_CANCELLED }
             );
 
             res.status(200).json(response['responseEnvelope']);
@@ -468,9 +431,10 @@ router.delete('/preapproval/:key', (req, res, next) => {
 
 router.post('/ipn', (req, res, next) => {
     var params = req.body;
-    console.log('INCOMING IPN - request headers, body:', req.headers, req.body);
+    Log.debug('INCOMING IPN - request headers, body:', { headers: req.headers, body: req.body });
 
     // handle the IPN
+    var handled = false;
     if (params['transaction_type'] === 'Adaptive Payment PREAPPROVAL') {
         // IPN body - preapproval: {
         //     max_number_of_payments: 'null',
@@ -505,9 +469,11 @@ router.post('/ipn', (req, res, next) => {
                     'status','sender_email','ending_date','starting_date'
                 )
             );
+            handled = true;
         } else {
             // delete the preapproval entry
             PayPalModel.delete(params['preapproval_key']);
+            handled = true;
         }
     } else if (params['transaction_type'] === 'Adaptive Payment PAY') {
         // IPN body - PAY {
@@ -550,12 +516,10 @@ router.post('/ipn', (req, res, next) => {
                 'amount': params['transaction[0].amount']
             };
             PayPalModel.updatePayment(params['pay_key'], data);
-        } else {
-            console.log('UNHANDLED IPN - request headers, body:', req.headers, req.body);
+            handled = true;
         }
-    } else {
-        console.log('UNHANDLED IPN - request headers, body:', req.headers, req.body);
     }
+    if (!handled) Log.debug('UNHANDLED IPN - request headers, body:', { headers: req.headers, body: req.body });
 });
 
 module.exports = router;
@@ -568,7 +532,7 @@ function _getPreapprovalDetails(key, callback) {
             errorLanguage: 'en_US'
         },
     };
-    console.log('PreApprovalDetails options:', options);
+    Log.debug('PreApprovalDetails options:', options);
     paypalSdk.preapprovalDetails(qs.stringify(options), (err, response) => {
         if (err) err.message = response['error'][0]['message'];
         else {
@@ -582,3 +546,30 @@ function _getPreapprovalDetails(key, callback) {
     });
 }
 
+function _getPriceData(purchaseKey, callback) {
+    PayPalModel.getPriceList((prices) => {
+        if (prices) {
+            if (prices.hasOwnProperty(purchaseKey)) return callback(null, prices[purchaseKey]);
+            else return callback(new Error("Purchase key '" + purchaseKey + "' is invalid"));
+        }
+
+        // not in redis, so make http call
+        WalletServer.getPriceList((err, res) => {
+            if (err) return callback(err);
+
+            prices = {};
+            for (var idx = 0, length = res['prices'].length; idx < length; idx++) {
+                var priceData = res['prices'][idx];
+                if (priceData['purchaseKey'].match(/^PPAP_/)) {
+                    prices[priceData['purchaseKey']] = priceData;
+                }
+            }
+            // cache the price list
+            PayPalModel.setPriceList(prices);
+
+            if (prices.hasOwnProperty(purchaseKey))
+                return callback(null, prices[purchaseKey]);
+            else return callback(new Error("Purchase key '" + purchaseKey + "' is invalid"));
+        });
+    });
+}

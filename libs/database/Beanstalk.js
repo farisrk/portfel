@@ -2,12 +2,13 @@
 
 var async = require('async');
 var beanstalk_client = require('beanstalk_client').Client;
+var Log = global.logger.database;
 
 var connection_cache = {};
 
 var staticFunc = exports.Beanstalk = {
-    load: function(config, next) {
-        async.forEach(config, function(connection, callback) {
+    load: (config, callback) => {
+        async.forEachSeries(config, (connection, next) => {
             var name = connection.name;
             var server = connection.host + ":" + connection.port;
             // we will not be pooling the connections based on server because having to use tubes
@@ -15,45 +16,67 @@ var staticFunc = exports.Beanstalk = {
             // we are caching connections based on connection name. Please do not create multiple
             // connections with the same name!
             if (connection_cache.hasOwnProperty(name))
-                return callback(new Error('Beanstalk connection ' + name + ' already exists'));
+                return next(new Error('Beanstalk connection ' + name + ' already exists'));
 
-            beanstalk_client.connect(server, function(err, conn) {
+            beanstalk_client.connect(server, (err, conn) => {
                 if (err) {
-                    //Log.error("Beanstalk::load - Could NOT connect to Beanstalk server: " + server);
-                    return callback(err);
+                    Log.error('[Beanstalk::load] Could not connect to Beanstalk server', {
+                        error: err, connection: connection
+                    });
+
+                    return next(err);
                 }
 
-                conn.use(connection.tube, function(err) {
+                conn.use(connection.tube, (err) => {
                     if (err) {
-                        //Log.error('Beanstalk::load - error while using tube [' + conf.tube + '], error [' + err + ']');
+                        Log.error('[Beanstalk::load] Error while using tube', {
+                            errObj: err, tube: conf.tube
+                        });
+
                         return next(err);
                     }
-
                     connection_cache[name] = conn;
-                    return callback();
+                    return next();
                 });
             });
-        }, function (err) {
-            //if (!err) Log.debug("Successfully connected to beanstalk for: " + Object.keys(connection_cache))
-            return next(err);
+        }, (err) => {
+            if (!err) Log.debug('[Beanstalk::load] Successfully connected to Beanstalk', { connections: config });
+            return callback(err);
         });
     },
-    getConnection: function(name, next) {
-        if (!connection_cache.hasOwnProperty(name)) {
-            //Log.error("Beanstalk::getConnection - The name" + name + " does not exist.");
-            return next(new Error('Invalid beanstalk connnection name "' + name + '"'));
-        }
-
-        return next(null, connection_cache[name]);
+    getConnection: (name) => {
+        if (!connection_cache.hasOwnProperty(name))
+            throw new Error('Requested connection does not exist');
+        return connection_cache[name];
     },
-    put: function(name, priority, delay, ttr, payload, next) {
-        staticFunc.getConnection(name, function(err, connection) {
-            if (err) return next(err);
+    getConnections: () => {
+        return connection_cache;
+    },
+    put: (name, priority, delay, ttr, payload, callback) => {
+        try {
+            var connection = staticFunc.getConnection(name);
+            connection.put(priority, delay, ttr, JSON.stringify([ payload ]), (err, jobId) => {
+                var logLevel = 'info';
+                var logMessage = '[Beanstalk::put] Putting a job on the stalk';
+                var meta = {
+                    data: payload
+                };
+                if (err) {
+                    logLevel = 'error';
+                    meta['error'] = err;
+                } else {
+                    meta['jobId'] = jobId;
+                }
+                Log.log(logLevel, logMessage, meta);
 
-            connection.put(priority, delay, ttr, JSON.stringify([ payload ]), function(err, jobId) {
-                //if (err) Log.error('Beanstalk::put - error while putting job [' + JSON.stringify(payload) + '], error [' + err + ']');
-                return next(err, jobId);
+                return callback(err, jobId);
             });
-        });
+        } catch(err) {
+            Log.error('[BeanstalkClient::put] Error occurred during put call', {
+                message: err['message'],
+                error: err['stack']
+            });
+            return callback(err);
+        }
     }
 };

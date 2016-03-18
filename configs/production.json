@@ -1,0 +1,65 @@
+{
+    "host": "xxx.com",
+    "port": 3000,
+    "logs": "../wallet/logs",
+
+    "paypal": {
+        "sandbox": true,
+        "api": {
+            "appId": "APP-xxx",
+            "userId": "xxx",
+            "email": "xxx",
+            "password": "xxx",
+            "signature": "xxx",
+            "clientId": "xxx",
+            "secret": "xxx"
+        },
+        "preapproval": {
+            "endpoint": "https://svcs.sandbox.paypal.com/AdaptivePayments/Preapproval",
+            "redirect": "https://www.sandbox.paypal.com/webapps/adaptivepayment/flow/preapproval?preapprovalKey=%s&expType=redirect"
+        },
+        "ipn": {
+            "verify": "www.sandbox.paypal.com",
+            "preapproval": "http://xxx.com/1/paypal/adaptivepayment/ipn",
+            "pay": "http://xxx.com/1/paypal/"
+        },
+        "immediateCharge": false,
+        "multiplePreapprovals": false,
+        "currencyCode": "USD"
+    },
+    "http": [
+        {
+            "name": "wallet",
+            "host": "xxx.com",
+            "port": 8450
+        }
+    ],
+    "beanstalk": [
+        {
+            "tube": "wallet",
+            "name": "wallet",
+            "host": "xxx.com",
+            "port": 11300
+        }
+    ],
+    "redis": [
+        {
+            "name": "wallet",
+            "host": "xxx.com",
+            "port": 6379
+        }
+    ],
+    "mongo": [
+        {
+            "host": "xxx.com",
+            "port": 27017,
+            "database": "Wallet",
+            "name": "wallet",
+            "collections": [
+                "PreApprovals",
+                "Payments",
+                "PointsErrors"
+            ]
+        }
+    ]
+}

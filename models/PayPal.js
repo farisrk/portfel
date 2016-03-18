@@ -1,6 +1,8 @@
 "use strict";
 
-var MongoDB = require('../libs/database/MongoDB').MongoDB;
+var Redis = require('../libs/database/Redis').Redis;
+var MongoDB = require('../libs/database/MongoDB').Mongo;
+var dbLogger = global.logger.database;
 
 var staticFuncs = exports.PayPalDAO = {
     // Properties
@@ -9,7 +11,7 @@ var staticFuncs = exports.PayPalDAO = {
     STATUS_CANCELLED: 'CANCELED',
 
     // Methods:
-    getByUser: function(userId, callback) {
+    getByUser: (userId, callback) => {
         var query = {
             user_id: userId,
             status: {
@@ -19,84 +21,108 @@ var staticFuncs = exports.PayPalDAO = {
                 ]
             }
         };
-        MongoDB.get().collection('PreApprovals').find(query).toArray((err, result) => {
-            if (err) {
-                // TODO: Log.error('[PreApprovalDAO::getByUser] query: [' + query + '], error: [' + err + ']');
-                return callback([]);
-            }
+        MongoDB.doQuery({
+            ns: 'PayPal::getByUser', op: 'find',
+            connection: 'wallet', collection: 'PreApprovals',
+            query: query
+        }, (err, result) => {
+            if (err) result = [];
             return callback(result);
         });
     },
 
-    getByKey: function(key, callback) {
-        var query = { _id: key };
-        MongoDB.get().collection('PreApprovals').find(query).toArray((err, result) => {
-            if (err) {
-                // TODO: Log.error('[PreApprovalDAO::getByUser] query: [' + query + '], error: [' + err + ']');
-                return callback({});
-            }
+    getByKey: (key, callback) => {
+        MongoDB.doQuery({
+            ns: 'PayPal::getByKey', op: 'find',
+            connection: 'wallet', collection:'PreApprovals',
+            query: { _id: key }
+        }, (err, result) => {
+            if (err) return callback({});
             return callback(result[0]);
         });
     },
 
-    create: function(key, data) {
+    create: (key, data) => {
         data['_id'] = key;
         data['status'] = staticFuncs.STATUS_PENDING;
         data['created_at'] = (new Date()).getTime();
         data['updated_at'] = (new Date()).getTime();
 
-        MongoDB.get().collection('PreApprovals').insert(data, { safe: true }, (err, result) => {
-            if (err) {
-                // TODO: Log.error('[PreApprovalDAO::getByUser] query: [' + query + '], error: [' + err + ']');
-            }
-        });
+        MongoDB.doQuery({
+            ns: 'PayPal::create', op: 'insert',
+            connection: 'wallet', collection:'PreApprovals',
+            data: data, options: { safe: true }
+        }, () => {});
     },
 
-    update: function(key, update) {
-        var where = {
-            _id: key
-        };
+    update: (key, update) => {
         update['updated_at'] = (new Date()).getTime();
-        MongoDB.get().collection('PreApprovals').update(where, {'$set': update});
+
+        MongoDB.doQuery({
+            ns: 'PayPal::update', op: 'update',
+            connection: 'wallet', collection:'PreApprovals',
+            query: { _id: key }, update: { '$set': update }
+        }, () => {});
     },
 
-    delete: function(key) {
-        var where = {
-            _id: key
-        };
-        MongoDB.get().collection('PreApprovals').remove(where);
+    delete: (key) => {
+        MongoDB.doQuery({
+            ns: 'PayPal::delete', op: 'remove',
+            connection: 'wallet', collection:'PreApprovals',
+            query: { _id: key }
+        }, () => {});
     },
 
-    createPayment: function(key, data) {
+    createPayment: (key, data) => {
         data['_id'] = key;
-        MongoDB.get().collection('Payments').insert(data, { safe: true }, (err, result) => {
-            if (err) {
-                // TODO: Log.error('[PreApprovalDAO::getByUser] query: [' + query + '], error: [' + err + ']');
-            }
-        });
+
+        MongoDB.doQuery({
+            ns: 'PayPal::createPayment', op: 'insert',
+            connection: 'wallet', collection:'Payments',
+            data: data, options: { safe: true }
+        }, () => {});
     },
 
-    updatePayment: function(key, update) {
-        var where = {
-            _id: key
-        };
-        MongoDB.get().collection('Payments').update(where, {'$set': update});
+    updatePayment: (key, update) => {
+        MongoDB.doQuery({
+            ns: 'PayPal::updatePayment', op: 'update',
+            connection: 'wallet', collection:'Payments',
+            query: { _id: key }, update: { '$set': update }
+        }, () => {});
     },
 
-    pointsProvisioningError: function(key, data) {
+    pointsProvisioningError: (key, data) => {
         data['_id'] = key;
-        MongoDB.get().collection('PointsErrors').insert(data, { safe: true }, (err, result) => {
-            if (err) {
-                // TODO: Log.error('[PreApprovalDAO::getByUser] query: [' + query + '], error: [' + err + ']');
-            }
-        });
+
+        MongoDB.doQuery({
+            ns: 'PayPal::pointsProvisioningError', op: 'insert',
+            connection: 'wallet', collection:'PointsErrors',
+            data: data, options: { safe: true }
+        }, () => {});
     },
 
-    logIPN: function(data) {
-        MongoDB.get().collection('IpnLog').insert(data, { safe: true }, (err, result) => {
-            if (err) {
-                // TODO: Log.error('[PreApprovalDAO::getByUser] query: [' + query + '], error: [' + err + ']');
-            }
+    logIPN: (data) => {
+        MongoDB.doQuery({
+            ns: 'PayPal::logIPN', op: 'insert',
+            connection: 'wallet', collection:'IpnLog',
+            data: data, options: { safe: true }
+        }, () => {});
+    },
+
+    getPriceList: (callback) => {
+        Redis.doQuery({
+            ns: 'PayPal::getPriceList', op: 'get',
+            connection: 'wallet', key: 'paypalPriceList'
+        }, (err, result) => {
+            if (!err && result) result = JSON.parse(result);
+            return callback(result);
         });
+    },
+    setPriceList: (prices) => {
+        Redis.doQuery({
+            ns: 'PayPal::setPriceList', op: 'set',
+            connection: 'wallet', key: 'paypalPriceList',
+            value: JSON.stringify(prices), ttl: 86400
+        }, () => {});
     }
 };
