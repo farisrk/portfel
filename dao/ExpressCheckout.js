@@ -5,7 +5,7 @@ var Redis = require('../libs/database/Redis').Redis;
 var MongoDB = require('../libs/database/MongoDB').Mongo;
 var dbLogger = global.logger.database;
 
-var staticFuncs = exports.PayPalDAO = {
+var staticFuncs = exports.ExpressCheckoutDAO = {
     // Properties
     STATUS_PENDING: 'PENDING',
     STATUS_ACTIVE: 'ACTIVE',
@@ -33,21 +33,11 @@ var staticFuncs = exports.PayPalDAO = {
     },
 
     getByKey: (key, callback) => {
+        // key can be a token or billing agreement ID
         MongoDB.doQuery({
             ns: 'PayPal::getByKey', op: 'find',
             connection: 'wallet', collection:'PreApprovals',
-            query: { _id: key }
-        }, (err, result) => {
-            if (err) return callback({});
-            return callback(result[0]);
-        });
-    },
-
-    getByKey: (key, callback) => {
-        MongoDB.doQuery({
-            ns: 'PayPal::getByKey', op: 'find',
-            connection: 'wallet', collection:'PreApprovals',
-            query: { _id: key }
+            query: { '$or': [{ _id: key }, { billing_agreement_id: key }] }
         }, (err, result) => {
             if (err) return callback({});
             return callback(result[0]);
@@ -68,13 +58,24 @@ var staticFuncs = exports.PayPalDAO = {
         }, () => {});
     },
 
-    update: (key, update) => {
-        update['updated_at'] = (new Date()).getTime();
+    updateByToken: (token, update) => {
+        update['updated_at'] = (new Date()).toISOString();
 
         MongoDB.doQuery({
-            ns: 'PayPal::update', op: 'update',
+            ns: 'PayPal::updateByToken', op: 'update',
             connection: 'wallet', collection:'PreApprovals',
-            query: { _id: key }, update: { '$set': update }
+            query: { _id: token }, update: { '$set': update }
+        }, () => {});
+    },
+
+    updateByBillingId: (id, update) => {
+        update['updated_at'] = (new Date()).toISOString();
+
+        MongoDB.doQuery({
+            ns: 'PayPal::updateByBillingId', op: 'update',
+            connection: 'wallet', collection:'PreApprovals',
+            query: { billing_agreement_id: id },
+            update: { '$set': update }
         }, () => {});
     },
 
@@ -86,17 +87,26 @@ var staticFuncs = exports.PayPalDAO = {
         }, () => {});
     },
 
-    createPayment: (key, data) => {
-        data['_id'] = key;
+    createPayment: (id, data) => {
+        data['_id'] = id;
 
         MongoDB.doQuery({
             ns: 'PayPal::createPayment', op: 'insert',
             connection: 'wallet', collection:'Payments',
             data: data, options: { safe: true }
         }, () => {});
+        MongoDB.doQuery({
+            ns: 'PayPal::createPayment', op: 'update',
+            connection: 'wallet', collection:'PreApprovals',
+            query: { billing_agreement_id: data.billing_agreement_id },
+            update: { '$inc': {
+                cur_payments: 1,
+                cur_payments_amount: data.amount
+            }}
+        }, () => {});
     },
 
-    updatePayment: (key, update) => {
+    updatePayment: (key, update) => { // should be called by IPN handler
         MongoDB.doQuery({
             ns: 'PayPal::updatePayment', op: 'update',
             connection: 'wallet', collection:'Payments',

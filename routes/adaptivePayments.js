@@ -1,6 +1,5 @@
 "use strict";
 
-var util = require('util');
 var async = require('async');
 var express = require('express');
 var router = express.Router();
@@ -17,7 +16,7 @@ var paypalSdk = new Paypal({
     password: global.options.paypal.api.password,
     signature: global.options.paypal.api.signature,
     appId: global.options.paypal.api.appId,
-    sandboxPreapprovalUrl: global.options.paypal.preapproval.redirect,
+    sandboxPreapprovalUrl: global.options.paypal.redirect.adaptivePayment,
     sandbox: global.options.paypal.sandbox,
     requestFormat: 'NV'
 });
@@ -107,7 +106,7 @@ router.post('/preapproval/:userId', (req, res) => {
             if (!purchaseKey.match(/^PPAP_/))
                 return next(new Error('Purchase key "' + purchaseKey + '" is invalid'));
 
-            _getPriceData(purchaseKey, (err, priceData) => {
+            PayPalModel.getPriceData(purchaseKey, (err, priceData) => {
                 if (!err) {
                     points = priceData['points'];
                     amount = priceData['exactPrice'];
@@ -543,33 +542,5 @@ function _getPreapprovalDetails(key, callback) {
             });
         }
         return callback(err, response);
-    });
-}
-
-function _getPriceData(purchaseKey, callback) {
-    PayPalModel.getPriceList((prices) => {
-        if (prices) {
-            if (prices.hasOwnProperty(purchaseKey)) return callback(null, prices[purchaseKey]);
-            else return callback(new Error("Purchase key '" + purchaseKey + "' is invalid"));
-        }
-
-        // not in redis, so make http call
-        WalletServer.getPriceList((err, res) => {
-            if (err) return callback(err);
-
-            prices = {};
-            for (var idx = 0, length = res['prices'].length; idx < length; idx++) {
-                var priceData = res['prices'][idx];
-                if (priceData['purchaseKey'].match(/^PPAP_/)) {
-                    prices[priceData['purchaseKey']] = priceData;
-                }
-            }
-            // cache the price list
-            PayPalModel.setPriceList(prices);
-
-            if (prices.hasOwnProperty(purchaseKey))
-                return callback(null, prices[purchaseKey]);
-            else return callback(new Error("Purchase key '" + purchaseKey + "' is invalid"));
-        });
     });
 }

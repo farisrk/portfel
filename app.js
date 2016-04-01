@@ -48,6 +48,7 @@ async.series([
         var routes = require('./routes/index');
         var paypal = require('./routes/paypal');
         var adaptivePayments = require('./routes/adaptivePayments');
+        var expressCheckout = require('./routes/expressCheckout');
 
         // view engine setup
         app.set('views', path.join(__dirname, 'views'));
@@ -64,6 +65,8 @@ async.series([
         app.use('/', routes);
         app.use('/1/paypal', paypal);
         app.use('/1/paypal/adaptivepayment', adaptivePayments);
+        app.use('/1/paypal/ec', expressCheckout);
+
 
         // catch 404 and forward to error handler
         app.use((req, res, next) => {
@@ -102,7 +105,7 @@ async.series([
                     error: {}
                 });
             } else {
-              LOG.error("Ended up with error router with the headers being already sent!");
+              Log.error("Ended up with error router with the headers being already sent!");
             }
         });
 

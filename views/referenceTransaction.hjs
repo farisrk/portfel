@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <title>{{ title }}</title>
+        <link rel='stylesheet' href='/stylesheets/style.css' />
+        <script src='https://ajax.googleapis.com/ajax/libs/jquery/2.2.0/jquery.min.js'></script>
+
+        <script type='text/javascript'>
+            $(document).ready(function() {
+                $('#userID').val('{{userId}}');
+                $('#purchaseKey').keyup(function() {
+                    var amount = $('#purchaseKey').val();
+                    if (amount)
+                        $('#startPreapproval').removeAttr('disabled');
+                    else $('#startPreapproval').prop('disabled', true);
+                });
+
+                $('#startPreapproval').click(function() {
+                    var userId = $('#userID').val();
+                    var body = {
+                        return_url: window.location.href,
+                        cancel_url: window.location.href,
+                        //memo: '',
+                        secondary_id: '33966',
+                        purchase_key: $('#purchaseKey').val()
+                    };
+
+                    $.ajax({
+                        url: '/1/paypal/ec/reference/user/' + userId,
+                        method: 'POST',
+                        contentType: 'application/json',
+                        data: JSON.stringify(body),
+                        success: function(data, status, obj) {
+                            if (data.redirect)
+                                window.location.href = data.redirect;
+                        },
+                        error: function(err) {
+                            alert(err.status + ' - ' + JSON.parse(err.responseText)['msg']);
+                        }
+                    });
+                });
+                $('.payRequest').click(function(e) {
+                    var key = $(e.target).attr('key');
+                    var body = {
+                        amount: 0
+                    };
+
+                    $.ajax({
+                        url: '/1/paypal/ec/reference/' + key,
+                        method: 'POST',
+                        contentType: 'application/json',
+                        data: JSON.stringify(body),
+                        success: function(data, status, obj) {
+                            alert(obj.status + ' - ' + JSON.stringify(data));
+                        },
+                        error: function(err) {
+                            alert(err.status + ' - ' + err.responseText);
+                        }
+                    });
+                });
+                $('.continuePreapproval').click(function(e) {
+                    var key = $(e.target).attr('key');
+                    $.ajax({
+                        url: '/1/paypal/ec/reference/' + key,
+                        method: 'PATCH',
+                        success: function(data, status, obj) {
+                            $(e.target).closest('div').remove();
+                        },
+                        error: function(err) {
+                            alert(err.status + ' - ' + err.responseText);
+                        }
+                    });
+                });
+                $('.cancelPreapproval').click(function(e) {
+                    var key = $(e.target).attr('key');
+                    $.ajax({
+                        url: '/1/paypal/ec/reference/' + key,
+                        method: 'DELETE',
+                        success: function(data, status, obj) {
+                            $(e.target).closest('div').remove();
+                        },
+                        error: function(err) {
+                            alert(err.status + ' - ' + err.responseText);
+                        }
+                    });
+                });
+            });
+        </script>
+
+    </head>
+    <body>
+        <h1>{{ title }}</h1>
+        <div>
+            <h2>Start New Pre-Approval:</h2>
+            <form>
+                User ID:
+                <input id='userID' type='text' name='userID' placeholder='123456'><br>
+                Purchase Key:
+                <input id='purchaseKey' type='text' name='amount' placeholder='XX_50_00_USD'><br>
+                Select options:<br>
+                <button id='startPreapproval' type='button' disabled>Submit</button>
+            </form>
+        </div>
+        <br>
+        <div>
+            <h2>Current Pre-Approvals:</h2>
+            {{#preapprovals}}
+                <div>
+                    {{_id}} | {{status}} | ${{max_amount_per_payment}} |
+                    {{#links}}
+                        <button class='{{id}}' type='button' key='{{key}}'>{{label}}</button>
+                    {{/links}}
+                </div>
+            {{/preapprovals}}
+        </div>
+    </body>
+</html>

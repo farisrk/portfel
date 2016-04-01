@@ -17,7 +17,9 @@ var staticFunc = exports.Http = {
                 break;
             }
 
-            var server = 'http://' + connection.host + ':' + connection.port;
+            var protocol = connection.protocol || 'http';
+            var server = protocol + '://' + connection.host;
+            if (connection.hasOwnProperty('port')) server += ':' + connection.port;
             connection_cache[name] = request.defaults({ baseUrl: server });
         }
         if (!err) Log.debug('[Http::load] Successfully created Http request objects', { connections: config });
@@ -34,37 +36,43 @@ var staticFunc = exports.Http = {
     doRequest: (options, callback) => {
         try {
             // TODO: profile the query
-            var connection = staticFunc.getConnection(options['connection']);
-            var request = options['request'];
+            var connection = staticFunc.getConnection(options.connection);
+            var request = options.request;
             if (!request.hasOwnProperty('method'))
-                request['method'] = 'GET';
+                request.method = 'GET';
             if (!request.hasOwnProperty('json'))
-                request['json'] = true;
+                request.json = true;
             if (!request.hasOwnProperty('timeout'))
-                request['timeout '] = 10;
-            if (request['method'] == 'POST' || request['method'] == 'PUT') {
-                if (!request.hasOwnProperty('data')) request['data'] = {};
-            }
+                request.timeout = 10*1000; // 10 second timeout
+            if (/^(POST|PUT)$/.test(request.method) && !request.hasOwnProperty('data'))
+                request.data = {};
             // make the request
             connection(request, (err, response, body) => {
                 var logLevel = 'info';
-                var logMessage = util.format('[%s] : %s', options['ns'], request['method']);
-                options['response'] = _.pick(response, 'headers', 'statusCode', 'statusMessage', 'body');
+                var logMessage = util.format('[%s] : %s', options.ns, request.method);
 
-                var statusCode = response['statusCode'];
-                if (err || !statusCode.toString().match(/^2[\d]{2}$/)) {
+                if (response) {
+                    options.response = _.pick(response, 'headers', 'statusCode', 'statusMessage', 'body');
+                    // if an error response code, create an error instance if it doesn't already exist
+                    if (!err && !response.statusCode.toString().match(/^2[\d]{2}$/)) {
+                        var errMsg = response.statusMessage;
+                        if (body && body instanceof Object && body.hasOwnProperty('msg'))
+                            errMsg = body.msg;
+                        err = new Error(errMsg);
+                    }
+                    if (err) {
+                        err.code = response.statusCode;
+                        err.details = response.body;
+                    }
+                    response.body = body;
+                }
+                if (err) {
                     logLevel = 'error';
-
-                    var errorMessage = response['statusMessage'];
-                    if (body && body instanceof Object && body.hasOwnProperty('msg'))
-                        errorMessage = body['msg'];
-                    options[error] = errorMessage;
-                    if (!err) err = new Error(errorMessage);
-                    err.statusCode = statusCode;
+                    options.error = _.pick(err, 'message', 'code', 'trace');
                 }
                 Log.log(logLevel, logMessage, options);
 
-                return callback(err, body);
+                return callback(err, response);
             });
         } catch(err) {
             Log.error('[HTTP::doRequest] Error occurred during http request', {

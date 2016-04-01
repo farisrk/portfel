@@ -18,7 +18,7 @@ exports.Wallet = {
         var request = {
             method: 'POST',
             uri: '/1/paypal/:userId'.replace(':userId', userId),
-            body: { purchaseKey: preapprovalDetails['purchase_key'] }
+            body: { purchaseKey: purchaseKey }
         };
         HttpClient.doRequest({
             ns: 'WalletServer::createTransaction',
