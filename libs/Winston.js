@@ -43,6 +43,22 @@ exports.init = (app) => {
                 timestamp: true,
                 showLevel: true
             }));
+            transports.push(new (winston.transports.Mail)({
+                level: 'error',
+                name: loggerType,
+                host: global.options.smtp.host,
+                port: global.options.smtp.port,
+                username: 'admin',
+                authentication: false,
+                use_authentication: false,
+                from: global.options.emailAlert.from,
+                to: global.options.emailAlert.to.join(','),
+                maxBufferTimeSpan: 60*1000,
+                json: true,
+                timestamp: true,
+                showLevel: true,
+                debug: true
+            }));
         } else {
             transports.push(new (winston.transports.File)({
                 level: 'info',
@@ -59,12 +75,18 @@ exports.init = (app) => {
             transports.push(new (winston.transports.Mail)({
                 level: 'error',
                 name: loggerType,
-                to: 'farisk@airg.com',
-                from: 'wallet@airg.com',
-                maxBufferTimeSpan: 60000,
+                host: global.options.smtp.host,
+                port: global.options.smtp.port,
+                username: 'admin',
+                authentication: false,
+                use_authentication: false,
+                from: global.options.emailAlert.from,
+                to: global.options.emailAlert.to.join(','),
+                maxBufferTimeSpan: 60*1000*15,
                 json: true,
                 timestamp: true,
-                showLevel: true
+                showLevel: true,
+                debug: false
             }));
         }
         loggers[loggerType] = new (winston.Logger)({

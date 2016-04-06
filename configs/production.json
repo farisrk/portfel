@@ -3,6 +3,15 @@
     "port": 3000,
     "logs": "./logs",
 
+    "smtp": {
+        "host": "xxx.com",
+        "port": 25
+    },
+    "emailAlert": {
+        "from": "wallet.paypal@xxx.com",
+        "to": ["sucker@xxx.com"]
+    },
+
     "paypal": {
         "sandbox": true,
         "api": {

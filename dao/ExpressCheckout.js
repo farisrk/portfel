@@ -68,14 +68,16 @@ var staticFuncs = exports.ExpressCheckoutDAO = {
         }, () => {});
     },
 
-    updateByBillingId: (id, update) => {
-        update['updated_at'] = (new Date()).toISOString();
-
+    cancelByBillingId: (id) => {
         MongoDB.doQuery({
             ns: 'PayPal::updateByBillingId', op: 'update',
             connection: 'wallet', collection:'PreApprovals',
             query: { billing_agreement_id: id },
-            update: { '$set': update }
+            update: { '$set': {
+                'status': staticFuncs.STATUS_CANCELLED,
+                'updated_at': (new Date()).toISOString()
+            }},
+            options: { 'multi': true }
         }, () => {});
     },
 
@@ -142,12 +144,13 @@ var staticFuncs = exports.ExpressCheckoutDAO = {
             }
 
             // not in redis, so make http call
-            Wallet.getPriceList((err, res) => {
+            Wallet.getPriceList((err, response) => {
                 if (err) return callback(err);
 
                 prices = {};
-                for (var idx = 0, length = res['prices'].length; idx < length; idx++) {
-                    var priceData = res['prices'][idx];
+                var priceList = response.body.prices;
+                for (var idx = 0, length = priceList.length; idx < length; idx++) {
+                    var priceData = priceList[idx];
                     if (priceData['purchaseKey'].match(/^PPAP_/)) {
                         prices[priceData['purchaseKey']] = priceData;
                     }

@@ -67,7 +67,6 @@ async.series([
         app.use('/1/paypal/adaptivepayment', adaptivePayments);
         app.use('/1/paypal/ec', expressCheckout);
 
-
         // catch 404 and forward to error handler
         app.use((req, res, next) => {
           var err = new Error('Not Found');

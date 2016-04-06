@@ -10,7 +10,14 @@ var PayPalEC = require('../models/ExpressCheckout');
 var beanstalkClient = require('../libs/database/Beanstalk').Beanstalk;
 var Log = global.logger.application;
 var WalletServer = require('../libs/Wallet').Wallet;
+var nodemailer = require('nodemailer');
 
+//////////////////
+/// initialization
+//////////////////
+// create reusable transporter object using the default SMTP transport
+var smtpTransport = nodemailer.createTransport(global.options.smtp);
+// instantiate the paypal express checkout model
 var paypalEC = new PayPalEC({
     username: global.options.paypal.api.userId,
     password: global.options.paypal.api.password,
@@ -168,10 +175,23 @@ router.patch('/reference/:key', (req, res) => {
             // verify the preapproval exists in our database
             ecDAO.getByKey(token, (result) => {
                 var err;
-                if (!result) err = new Error('PreApproval does not exist');
-                else if (result.status == ecDAO.STATUS_ACTIVE) err = new Error('PreApproval is already active');
-                else if (result.status == ecDAO.STATUS_CANCELLED) err = new Error('PreApproval has been canceled');
-                if (err) err.details = result;
+                if (!result) {
+                    err = new Error('PreApproval does not exist');
+                    err.code = 404;
+                }
+                else if (result.status == ecDAO.STATUS_CANCELLED) {
+                    err = new Error('PreApproval has been canceled');
+                    err.code = 406;
+                }
+                else if (result.status == ecDAO.STATUS_ACTIVE) {
+                    res.status(200).json({
+                        status: ecDAO.STATUS_ACTIVE,
+                        billing_agreement_id: result.billing_agreement_id
+                    });
+                    return;
+                }
+
+                if (err && result) err.details = result;
                 return next(err);
             });
         },
@@ -179,9 +199,21 @@ router.patch('/reference/:key', (req, res) => {
             // get the express checkout details
             paypalEC.getExpressCheckoutDetails(token, (err, response) => {
                 ecDetails = response;
+                if (err && err.details.L_ERRORCODE0 == 10411) {
+                    ecDAO.updateByToken(token, {
+                        status: ecDAO.STATUS_CANCELLED
+                    });
+                    res.status(200).json({
+                        status: ecDAO.STATUS_CANCELLED,
+                        msg: err.details.L_LONGMESSAGE0
+                    });
+                    return;
+                }
                 if (!err && response.BILLINGAGREEMENTACCEPTEDSTATUS == 0) {
-                    err = new Error('User has not accepted the agreement');
-                    err.details = response;
+                    res.status(202).json({
+                        redirect: global.options.paypal.redirect.expressCheckout + token
+                    });
+                    return;
                 }
 
                 return next(err);
@@ -195,9 +227,9 @@ router.patch('/reference/:key', (req, res) => {
             });
         }
     ], (err) => {
-        if (err) {
+         if (err) {
             Log.error(err.message, err.details);
-            res.status(500).json({
+            res.status(err.code || 500).json({
                 msg: err.message,
                 details: err.details
             });
@@ -234,17 +266,21 @@ router.get('/reference/:key', (req, res) => {
         (next) => {
             // retrieve the preapproval details
             ecDAO.getByKey(key, (details) => {
-                if (!details)
-                    return next(new Error('PreApproval does not exist'));
+                var err;
+                if (!details) {
+                    err = new Error('PreApproval does not exist');
+                    err.code = 404;
+                } else {
+                    preapprovalDetails = details;
+                }
 
-                preapprovalDetails = details;
-                return next();
+                return next(err);
             });
-        },
+        }
     ], (err) => {
         if (err) {
             Log.error(err.message);
-            res.status(500).json({
+            res.status(err.code || 500).json({
                 msg: err.message
             });
         } else {
@@ -255,27 +291,44 @@ router.get('/reference/:key', (req, res) => {
 
 // cancel preapproval
 router.delete('/reference/:key', (req, res, next) => {
-    var billingAgreementId = req.params.key;
-    var notifyUrl = global.options.paypal.ipn.preapproval.expressCheckout;
+    var token = req.params.token;
+    var preapprovalDetails;
 
-    paypalEC.cancelBillingAgreement(billingAgreementId, notifyUrl, (err, response) => {
-        // error code 10201 means the billing agreement was alrady canceled,
-        // so we will not treat this error code as an error
-        if (err && response.L_ERRORCODE0 != 10201) {
+    async.series([
+        (next) => {
+            // retrieve the preapproval details
+            ecDAO.getByKey(token, (details) => {
+                var err;
+                if (!details) {
+                    err = new Error('PreApproval does not exist');
+                    err.code = 404;
+                } else {
+                    preapprovalDetails = details;
+                }
+
+                return next(err);
+            });
+        },
+        (next) => {
+            // cancel the preapproval in our database
+            ecDAO.updateByToken(token, {
+                status: ecDAO.STATUS_CANCELLED
+            });
+
+            return next();
+        }
+    ], (err) => {
+        if (err) {
             Log.error(err.message, err.details);
-            res.status(500).json({
-                msg: err.message,
-                details: err.details
+            res.status(err.code || 500).json({
+                msg: err.message
             });
         } else {
-            // update the preapproval in our database incase the IPN doesnot come or is late
-            ecDAO.updateByBillingId(
-                billingAgreementId, { status: ecDAO.STATUS_CANCELLED }
-            );
             // send response
             res.status(200).json({
                 status: ecDAO.STATUS_CANCELLED,
-                billing_agreement_id: billingAgreementId
+                user_id: preapprovalDetails.user_id,
+                billing_agreement_id: preapprovalDetails.billing_agreement_id
             });
         }
     });
@@ -283,27 +336,35 @@ router.delete('/reference/:key', (req, res, next) => {
 
 // pay request
 router.post('/reference/:key', (req, res) => {
-    var billingAgreementId = req.params['key'];
-    var amount = req.body['amount'];
+    var billingAgreementId = req.params.key;
+    var amount = req.body.amount;
     var preapprovalDetails, points, secondaryId, purchaseKey, transactionId, payResponse;
 
     async.series([
         (next) => {
             // retrieve the preapproval details
             ecDAO.getByKey(billingAgreementId, (result) => {
-                preapprovalDetails = result;
+                var err;
+                if (!result) {
+                    err = new Error('PreApproval does not exist');
+                    err.code = 404;
+                }
+                else if (result.status != ecDAO.STATUS_ACTIVE) {
+                    err = new Error('PreApproval is not active');
+                    err.code = 403;
+                }
+                else {
+                    preapprovalDetails = result;
 
-                if (!result)
-                    return next(new Error('PreApproval does not exist'));
-                if (result['status'] != ecDAO.STATUS_ACTIVE)
-                    return next(new Error('PreApproval is not active'));
-                if (!amount || parseFloat(amount) > parseFloat(result['max_amount_per_payment']))
-                    amount = result['max_amount_per_payment'];
-                points = result['points'];
-                secondaryId = result['secondary_id'];
-                purchaseKey = result['purchase_key'];
+                    if (!amount || parseFloat(amount) > parseFloat(result.max_amount_per_payment))
+                        amount = result.max_amount_per_payment;
+                    points = result.points;
+                    secondaryId = result.secondary_id;
+                    purchaseKey = result.purchase_key;
+                }
+                if (err && result) err.details = result;
 
-                return next();
+                return next(err);
             });
         },
         (next) => {
@@ -311,24 +372,30 @@ router.post('/reference/:key', (req, res) => {
             WalletServer.createTransaction(secondaryId, purchaseKey, (err, response) => {
                 if (!err) {
                     transactionId = response.body.guid;
-                    if (!transactionId) err = new Error('Create transaction did not return a GUID');
+                    if (!transactionId) {
+                        err = new Error('Create transaction did not return a GUID');
+                        err.code = 503;
+                    }
                 }
+                if (err && response) err.details = response;
 
                 return next(err);
             });
         },
         (next) => {
             // send the pay request to paypal
-            var custom = {};
             var notifyUrl = global.options.paypal.ipn.pay;
+            var custom = { secondary_id: secondaryId, purchase_key: purchaseKey };
 
             paypalEC.doReferenceTransaction(billingAgreementId, amount, custom, notifyUrl, (err, response) => {
                 payResponse = response;
                 if (err && response.L_ERRORCODE0 == 10201) {
                     // the billing agreement has been canceled, so update our records
-                    ecDAO.updateByBillingId(
-                        billingAgreementId, { status: ecDAO.STATUS_CANCELLED }
-                    );
+                    ecDAO.cancelByBillingId(billingAgreementId);
+                }
+                else if (!err && response && response.PAYMENTSTATUS != 'Completed') {
+                    err = new Error(response.PENDINGREASON);
+                    err.details = response;
                 }
 
                 return next(err);
@@ -379,14 +446,20 @@ router.post('/reference/:key', (req, res) => {
             WalletServer.updateBalance(secondaryId, transactionId, points, (err, response) => {
                 if (err) {
                     // could not add points to the user wallet, just log the error
-                    // TODO: send email alerts! .. use winston!
-                    ecDAO.pointsProvisioningError(payResponse['TRANSACTIONID'], {
+                    ecDAO.pointsProvisioningError(transactionId, {
                         'points': points,
                         'purchase_key': purchaseKey,
-                        'user_id': preapprovalDetails['user_id'],
+                        'user_id': preapprovalDetails.user_id,
                         'secondary_id': secondaryId,
-                        'errorCode': err.code,
-                        'errorMessage': err.message
+                        'transaction_id': payResponse.TRANSACTIONID,
+                        'error_code': err.code,
+                        'error_message': err.message
+                    });
+                    Log.error("Failed to add credits to user's wallet.  Check the PointsErrors collection for more info.", {
+                        user_id: preapprovalDetails.user_id,
+                        secondary_id: secondaryId,
+                        wallet_guid: transactionId,
+                        transaction_id: payResponse.TRANSACTIONID
                     });
                 }
 
@@ -400,28 +473,28 @@ router.post('/reference/:key', (req, res) => {
         };
 
         if (err) {
-            Log.error(err.message, payResponse);
-            res.status(500).json({
+            Log.error(err.message, err.details);
+            res.status(err.code || 500).json({
                 msg: err.message,
                 details: payResponse
             });
             // add meta-data for the transaction status
-            transactionStatus['response'] = 505; // failed response
-            transactionStatus['render'] = err.message;
+            transactionStatus.response = 505; // failed response
+            transactionStatus.render = err.message;
         } else {
             // create the payment entry
             var paymentData = {
-                'status': payResponse['PAYMENTSTATUS'],
+                'status': payResponse.PAYMENTSTATUS,
                 'billing_agreement_id': billingAgreementId,
-                'user_id': preapprovalDetails['user_id'],
-                'amount': parseFloat(payResponse['AMT']),
-                'fee': parseFloat(payResponse['FEEAMT']),
-                'currency_code': payResponse['CURRENCYCODE'],
+                'user_id': preapprovalDetails.user_id,
+                'amount': parseFloat(payResponse.AMT),
+                'fee': parseFloat(payResponse.FEEAMT),
+                'currency_code': payResponse.CURRENCYCODE,
                 'points': points,
-                'payment_request_date': payResponse['ORDERTIME'],
-                'transaction_id': payResponse['TRANSACTIONID'],
-                'pending_reason': payResponse['PENDINGREASON'],
-                'reason_code': payResponse['REASONCODE']
+                'payment_request_date': payResponse.ORDERTIME,
+                'transaction_id': payResponse.TRANSACTIONID,
+                'pending_reason': payResponse.PENDINGREASON,
+                'reason_code': payResponse.REASONCODE
             };
             ecDAO.createPayment(transactionId, paymentData);
             res.status(200).json(paymentData);
@@ -441,12 +514,18 @@ router.post('/reference/:key', (req, res) => {
                         'points': points,
                         'purchaseKey': purchaseKey
                     },
-                    'created': payResponse['ORDERTIME']
+                    'created': payResponse.ORDERTIME
                 }, () => {});
             }
             // add meta-data for the transaction status
-            transactionStatus['purchaseId'] = payResponse['TRANSACTIONID'];
-            // TODO: send e-mail to user notifying them of the charge
+            transactionStatus.purchaseId = payResponse.TRANSACTIONID;
+            // send e-mail to user notifying them of the charge
+            smtpTransport.sendMail({
+                from: '"airG Customer Support" <support@airgames.com>',
+                to: preapprovalDetails.payer.email,
+                subject: 'airG Credits Autoload Receipt',
+                text: util.format('You have been charged $%s for %s airG Credits', parseFloat(payResponse.AMT), points)
+            });
         }
 
         // update transaction only if a transaction was created (unless error occurred)
@@ -455,6 +534,115 @@ router.post('/reference/:key', (req, res) => {
             WalletServer.updateTransaction(secondaryId, transactionId, transactionStatus, () => {});
         }
     });
+});
+
+router.post('/ipn', (req, res, next) => {
+    var params = req.body;
+    Log.debug('INCOMING IPN - request headers, body:', { headers: req.headers, body: req.body });
+
+    // handle the IPN
+    var handled = false;
+    if (params.txn_type == 'mp_signup') {
+        // IPN body {
+        //     "txn_type" : "mp_signup",
+        //     "last_name" : "Zheng",
+        //     "mp_currency" : "CAD",
+        //     "residence_country" : "CA",
+        //     "mp_status" : "0",
+        //     "mp_custom" : "{\"secondary_id\":\"67177\"}",
+        //     "mp_pay_type" : "INSTANT",
+        //     "verify_sign" : "Ai5WQD.0Wr-X3e3nArQqzScD4vOJA3CxxPktr4i8VxXKDc.fEt8f03XB",
+        //     "payer_status" : "verified",
+        //     "test_ipn" : "1",
+        //     "payer_email" : "ante@airgames.ca",
+        //     "first_name" : "Ante",
+        //     "payer_id" : "DCC4K7K2P77E2",
+        //     "reason_code" : "mp_2001",
+        //     "mp_id" : "B-25S76546Y1273532T",
+        //     "charset" : "windows-1252",
+        //     "notify_version" : "3.8",
+        //     "mp_desc" : "$25 authorization for auto-billing",
+        //     "mp_cycle_start" : "1",
+        //     "ipn_track_id" : "ed8455ec1369"
+        // }
+
+        // take no action here since signup is already handled
+        handled = true;
+    } else if (params.txn_type == 'mp_cancel') {
+        // IPN body {
+        //     "txn_type" : "mp_cancel",
+        //     "last_name" : "Khan",
+        //     "mp_currency" : "CAD",
+        //     "residence_country" : "CA",
+        //     "mp_status" : "1",
+        //     "mp_custom" : "{\"secondaryId\":\"6139\"}",
+        //     "mp_pay_type" : "INSTANT",
+        //     "verify_sign" : "A6bgev4A-GrVFBXGENdFw9G4s0.4AmR1XewNv98B0hLiBCv13JErMPRn",
+        //     "payer_status" : "verified",
+        //     "test_ipn" : "1",
+        //     "payer_email" : "khan@airgames.ca",
+        //     "first_name" : "Faris",
+        //     "payer_id" : "3ZGZY5QZYBNW8",
+        //     "reason_code" : "mp_2001",
+        //     "mp_id" : "B-1K863085185608058",
+        //     "charset" : "windows-1252",
+        //     "notify_version" : "3.8",
+        //     "mp_desc" : "$50.00 Auto-Reload Preapproval",
+        //     "mp_cycle_start" : "23",
+        //     "ipn_track_id" : "bb6dcb308e4b3"
+        // }
+
+        // user has cancelled their billing agreement, need to cancel all instances of
+        // preapprovals based on the billing agreement id
+        ecDAO.cancelByBillingId(params.mp_id);
+        handled = true;
+    } else if (params.txn_type == 'merch_pmt') {
+        // IPN body {
+        //     "mp_custom" : "{\"secondaryId\":\"6139\"}",
+        //     "mc_gross" : "50.00",
+        //     "mp_currency" : "CAD",
+        //     "protection_eligibility" : "Ineligible",
+        //     "payer_id" : "3ZGZY5QZYBNW8",
+        //     "tax" : "0.00",
+        //     "payment_date" : "16:31:53 Mar 30, 2016 PDT",
+        //     "mp_id" : "B-1K863085185608058",
+        //     "payment_status" : "Completed",
+        //     "charset" : "windows-1252",
+        //     "first_name" : "Faris",
+        //     "mp_status" : "0",
+        //     "mc_fee" : "2.25",
+        //     "notify_version" : "3.8",
+        //     "custom" : "{\"guid\":\"abc123\"}",
+        //     "payer_status" : "verified",
+        //     "business" : "khan@airgames.org",
+        //     "quantity" : "1",
+        //     "verify_sign" : "AOh0tu.5JUQyG2Aao4MpntBA2sFjAdy0JOrgEWOjMIXDfF0d0T3VqrpI",
+        //     "payer_email" : "khan@airgames.ca",
+        //     "txn_id" : "5T68391018116610S",
+        //     "payment_type" : "instant",
+        //     "last_name" : "Khan",
+        //     "mp_desc" : "$50.00 Auto-Reload Preapproval",
+        //     "receiver_email" : "khan@airgames.org",
+        //     "payment_fee" : "2.25",
+        //     "mp_cycle_start" : "23",
+        //     "receiver_id" : "MM5EPY4H2WCME",
+        //     "txn_type" : "merch_pmt",
+        //     "item_name" : "",
+        //     "mc_currency" : "USD",
+        //     "item_number" : "",
+        //     "residence_country" : "CA",
+        //     "test_ipn" : "1",
+        //     "handling_amount" : "0.00",
+        //     "transaction_subject" : "",
+        //     "payment_gross" : "50.00",
+        //     "shipping" : "0.00",
+        //     "ipn_track_id" : "3faae343b283c"
+        // }
+
+        // take no action here since payment response is already handled
+        handled = true;
+    }
+    if (!handled) Log.error('UNHANDLED IPN - request headers, body:', { headers: req.headers, body: req.body });
 });
 
 module.exports = router;
